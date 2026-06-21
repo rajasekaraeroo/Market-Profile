@@ -1,0 +1,48 @@
+name: Build Windows EXE
+
+# Builds a standalone Windows executable with PyInstaller and publishes it.
+#
+# - On a version tag push (e.g. v1.0.0): builds the EXE and attaches it to
+#   a GitHub Release for that tag, so it's downloadable from the repo's
+#   Releases page.
+# - On manual trigger (workflow_dispatch) or a push to main: builds the EXE
+#   and uploads it as a workflow artifact instead (no release), so changes
+#   can be smoke-tested without cutting a release.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile --windowed --name MarketProfile main.py
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MarketProfile-windows
+          path: dist/MarketProfile.exe
+
+      - name: Attach EXE to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/MarketProfile.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
