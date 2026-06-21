@@ -1,0 +1,45 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtual environments ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- Environment / secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Project-specific ---
+data/raw/
+data/cache/
+*.sqlite3
+*.db
+logs/
+*.log
+
+# --- PyInstaller build artifacts ---
+*.spec
+*.exe
+
+# --- Jupyter ---
+.ipynb_checkpoints/

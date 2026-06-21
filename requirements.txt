@@ -1,0 +1,24 @@
+# --- Core data handling ---
+pandas==2.2.2
+numpy==1.26.4
+
+# --- Upstox API + live feed ---
+upstox-python-sdk==2.18.0
+websocket-client==1.8.0
+requests==2.32.3
+protobuf==4.25.3
+
+# --- Desktop UI ---
+PyQt5==5.15.10
+
+# --- Config / secrets ---
+python-dotenv==1.0.1
+
+# --- Alerts ---
+python-telegram-bot==21.4
+
+# --- Testing ---
+pytest==8.2.2
+
+# --- Packaging (for EXE builds later) ---
+pyinstaller==6.8.0
