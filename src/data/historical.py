@@ -103,7 +103,7 @@ def fetch_historical_session(
         from_date=date.isoformat(),
     )
     response = requests.get(
-        url, headers={"Authorization": f"Bearer {access_token}"}
+        url, headers={"Authorization": f"Bearer {access_token}"}, timeout=10
     )
     response.raise_for_status()
     df = _parse_candles_response(response.json())

@@ -64,6 +64,7 @@ def exchange_code_for_token(
             "grant_type": "authorization_code",
         },
         headers={"Accept": "application/json"},
+        timeout=10,
     )
     response.raise_for_status()
     payload = response.json()

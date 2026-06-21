@@ -33,7 +33,7 @@ def test_fetch_returns_dataframe_with_expected_shape(monkeypatch):
     )
     calls = []
 
-    def fake_get(url, headers):
+    def fake_get(url, headers, timeout=None):
         calls.append(url)
         return FakeResponse(payload)
 
@@ -55,7 +55,7 @@ def test_holiday_or_missing_date_returns_flagged_empty_result(monkeypatch):
     payload = json.loads((FIXTURES_DIR / "historical_candles_empty.json").read_text())
 
     monkeypatch.setattr(
-        historical.requests, "get", lambda url, headers: FakeResponse(payload)
+        historical.requests, "get", lambda url, headers, timeout=None: FakeResponse(payload)
     )
 
     result = historical.fetch_historical_session(
@@ -72,7 +72,7 @@ def test_second_call_for_same_date_hits_cache_not_api(monkeypatch):
     )
     call_count = {"n": 0}
 
-    def fake_get(url, headers):
+    def fake_get(url, headers, timeout=None):
         call_count["n"] += 1
         return FakeResponse(payload)
 
