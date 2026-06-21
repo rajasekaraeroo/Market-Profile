@@ -1,0 +1,17 @@
+# User-editable list of F&O stock symbols to track in addition to the
+# built-in NIFTY/BANKNIFTY/SENSEX indices.
+#
+# Each symbol must be F&O-eligible per Upstox's instrument master — an
+# invalid/non-eligible symbol here is rejected with a clear error on
+# startup rather than silently skipped.
+#
+# Keep this list small: each entry needs its own live equity-price
+# subscription plus its own option-chain polling, and Upstox plans cap
+# concurrent subscriptions (see src/data/instrument_master.py
+# MAX_WATCHLIST_SIZE).
+stocks: []
+# Example once you have real symbols to track:
+# stocks:
+#   - RELIANCE
+#   - HDFCBANK
+#   - TCS

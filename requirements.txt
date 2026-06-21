@@ -13,6 +13,7 @@ PyQt5==5.15.10
 
 # --- Config / secrets ---
 python-dotenv==1.0.1
+PyYAML==6.0.2
 
 # --- Alerts ---
 python-telegram-bot==21.4
