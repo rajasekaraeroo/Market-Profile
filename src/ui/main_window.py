@@ -9,15 +9,18 @@ signal/slot mechanism, which is thread-safe by design.
 import datetime as dt
 
 import pandas as pd
-from PyQt5.QtCore import QThread, pyqtSignal
-from PyQt5.QtWidgets import QMainWindow, QMessageBox, QVBoxLayout, QWidget
+from PyQt5.QtCore import QObject, QThread, pyqtSignal
+from PyQt5.QtWidgets import QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget
 
+from src.alerts.alert_manager import AlertManager
 from src.data import upstox_auth
 from src.data.historical import fetch_historical_session
 from src.data.instrument_keys import get_instrument_key
 from src.data.live_feed import Bar, LiveFeed
+from src.data.option_chain import OptionChainPoller, nearest_weekly_expiry
 from src.engine.instruments import get_instrument_config
 from src.engine.profile import MarketProfile
+from src.ui.option_chain_panel import OptionChainPanel
 from src.ui.profile_widget import ProfileWidget
 from src.ui.session_controls import SessionControls
 
@@ -32,6 +35,23 @@ class _NotImplementedDecoder:
             "Live feed protobuf decoding is not implemented yet — see "
             "src/data/live_feed.py for the MarketFeedDecoder interface."
         )
+
+
+class OptionChainBridge(QObject):
+    """Bridges OptionChainPoller's background-thread callback into a Qt
+    signal so the panel only ever updates on the UI thread."""
+
+    snapshot_received = pyqtSignal(list, list)
+
+    def make_callback(self):
+        def _on_snapshot(snapshot: list[dict]) -> None:
+            self.snapshot_received.emit(snapshot, self.poller.previous if self.poller else [])
+
+        return _on_snapshot
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.poller: OptionChainPoller | None = None
 
 
 class LiveFeedWorker(QThread):
@@ -60,11 +80,18 @@ class MainWindow(QMainWindow):
 
         self.controls = SessionControls()
         self.profile_widget = ProfileWidget()
+        self.option_chain_panel = OptionChainPanel()
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.profile_widget, "Profile")
+        self.tabs.addTab(self.option_chain_panel, "Option Chain")
+        # Option chain only makes sense in Live mode (Session 4 spec).
+        self.tabs.setTabEnabled(1, False)
 
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.addWidget(self.controls)
-        layout.addWidget(self.profile_widget)
+        layout.addWidget(self.tabs)
         self.setCentralWidget(central)
 
         self.statusBar().showMessage("Ready")
@@ -76,6 +103,13 @@ class MainWindow(QMainWindow):
         self._live_worker: LiveFeedWorker | None = None
         self._live_bars: dict[dt.datetime, Bar] = {}
         self._live_instrument: str | None = None
+        self._period_count = 0
+
+        self._option_chain_bridge = OptionChainBridge()
+        self._option_chain_bridge.snapshot_received.connect(self._on_option_chain_snapshot)
+        self._option_chain_poller: OptionChainPoller | None = None
+
+        self._alert_manager = AlertManager()
 
         self._set_title("NIFTY", "no session loaded")
 
@@ -126,6 +160,8 @@ class MainWindow(QMainWindow):
         self._stop_live()
         self._live_bars = {}
         self._live_instrument = instrument
+        self._period_count = 0
+        self._alert_manager.reset_for_new_day(instrument)
 
         upstox_key = get_instrument_key(instrument)
         live_feed = LiveFeed(
@@ -139,6 +175,16 @@ class MainWindow(QMainWindow):
         self._live_worker.error.connect(self._on_live_error)
         self._live_worker.start()
 
+        self._option_chain_bridge.poller = OptionChainPoller(
+            instrument_key=upstox_key,
+            expiry_date=nearest_weekly_expiry(),
+            access_token=access_token,
+            on_snapshot=self._option_chain_bridge.make_callback(),
+        )
+        self._option_chain_poller = self._option_chain_bridge.poller
+        self._option_chain_poller.start()
+        self.tabs.setTabEnabled(1, True)
+
         self._set_title(instrument, "LIVE")
         self.statusBar().showMessage(f"{instrument} | connecting live feed...")
 
@@ -146,6 +192,11 @@ class MainWindow(QMainWindow):
         if self._live_worker is not None:
             self._live_worker.stop()
             self._live_worker = None
+        if self._option_chain_poller is not None:
+            self._option_chain_poller.stop()
+            self._option_chain_poller = None
+            self._option_chain_bridge.poller = None
+        self.tabs.setTabEnabled(1, False)
 
     def _on_live_bar(self, bar: Bar) -> None:
         self._live_bars[bar.minute_start] = bar
@@ -166,7 +217,16 @@ class MainWindow(QMainWindow):
         config = get_instrument_config(self._live_instrument)
         profile_result = MarketProfile(self._live_instrument, df).compute()
         self.profile_widget.set_profile(profile_result, config)
+        self.option_chain_panel.set_underlying_levels(profile_result)
         self._update_status_bar(self._live_instrument, profile_result)
+
+        self._period_count = len(profile_result.tpo.period_letters)
+        self._alert_manager.check_and_alert(
+            self._live_instrument, bar.close, self._period_count, profile_result, config
+        )
+
+    def _on_option_chain_snapshot(self, snapshot: list, previous: list) -> None:
+        self.option_chain_panel.set_chain(snapshot, previous)
 
     def _on_live_error(self, message: str) -> None:
         self.statusBar().showMessage(f"Live feed error: {message}")
