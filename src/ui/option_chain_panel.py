@@ -37,10 +37,28 @@ class OptionChainPanel(QWidget):
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.verticalHeader().setVisible(False)
 
+        self.liquidity_label = QLabel("")
+        self.liquidity_label.setStyleSheet("color: #a00; font-weight: bold;")
+        self.liquidity_label.setVisible(False)
+
         layout = QVBoxLayout(self)
         layout.addWidget(self.underlying_label)
         layout.addWidget(self.pcr_label)
+        layout.addWidget(self.liquidity_label)
         layout.addWidget(self.table)
+
+    def set_liquidity_flag(self, reason: str | None) -> None:
+        """Show/hide the "insufficient liquidity" flag and suppress the
+        option chain table when the watchlisted stock's options are too
+        thin to trust (Session 6 liquidity_filter). Indices and liquid
+        stocks pass `None` here and the chain renders normally."""
+        is_thin = reason is not None
+        self.liquidity_label.setVisible(is_thin)
+        if is_thin:
+            self.liquidity_label.setText(f"Insufficient liquidity for reliable OI signal: {reason}")
+            self.table.setRowCount(0)
+            self.pcr_label.setText("PCR: n/a (insufficient liquidity)")
+        self.table.setVisible(not is_thin)
 
     def set_underlying_levels(self, result: ProfileResult) -> None:
         day_type = result.day_type
@@ -55,6 +73,7 @@ class OptionChainPanel(QWidget):
         )
 
     def set_chain(self, chain_now: list[dict], chain_prev: list[dict] | None = None) -> None:
+        self.set_liquidity_flag(None)
         chain_prev = chain_prev or []
         self.pcr_label.setText(f"PCR: {pcr(chain_now):.2f}")
 

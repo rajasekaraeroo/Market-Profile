@@ -31,3 +31,10 @@ def get_instrument_key(instrument_key: str) -> str:
             f"Unknown instrument '{instrument_key}'. "
             f"Available: {sorted(INSTRUMENT_KEYS)}"
         )
+
+
+def register_stock_instrument_key(symbol: str, upstox_key: str) -> None:
+    """Add a watchlisted stock's Upstox instrument key, resolved at
+    startup via `instrument_master.py` rather than hand-entered like the
+    indices above."""
+    INSTRUMENT_KEYS[symbol.upper()] = upstox_key

@@ -82,6 +82,12 @@ class SessionControls(QWidget):
 
         self.action_button.setText("Start Live" if is_live else "Load")
 
+    def add_instruments(self, symbols: list[str]) -> None:
+        """Append watchlisted stocks to the instrument dropdown, alongside
+        NIFTY/BANKNIFTY/SENSEX — they behave identically once added, no
+        separate UI mode needed."""
+        self.instrument_combo.addItems(symbols)
+
     def _on_action_clicked(self) -> None:
         instrument = self.instrument_combo.currentText()
         if self.mode_combo.currentText() == "Live":

@@ -17,8 +17,11 @@ from src.data import upstox_auth
 from src.data.historical import fetch_historical_session
 from src.data.instrument_keys import get_instrument_key
 from src.data.live_feed import Bar, LiveFeed
+from src.data.instrument_keys import register_stock_instrument_key
+from src.data.liquidity_filter import check_liquidity
 from src.data.option_chain import OptionChainPoller, nearest_weekly_expiry
-from src.engine.instruments import get_instrument_config
+from src.data.watchlist import WatchlistError, load_watchlist
+from src.engine.instruments import get_instrument_config, register_stock_instrument
 from src.engine.profile import MarketProfile
 from src.ui.option_chain_panel import OptionChainPanel
 from src.ui.profile_widget import ProfileWidget
@@ -111,7 +114,35 @@ class MainWindow(QMainWindow):
 
         self._alert_manager = AlertManager()
 
+        self._liquid_instruments: set[str] = set()
+        self._load_watchlist()
+
         self._set_title("NIFTY", "no session loaded")
+
+    def _load_watchlist(self) -> None:
+        """Resolve config/watchlist.yaml's stocks into instruments and add
+        them to the dropdown alongside NIFTY/BANKNIFTY/SENSEX (Session 6).
+        A bad watchlist (oversized, or containing a non-F&O symbol) is a
+        clear startup error, not a silent skip — but it must not prevent
+        the indices from working, so it's caught here rather than at
+        import time."""
+        try:
+            entries = load_watchlist()
+        except WatchlistError as exc:
+            QMessageBox.warning(self, "Watchlist error", str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - e.g. no network for instrument master
+            QMessageBox.warning(
+                self, "Watchlist unavailable",
+                f"Could not resolve watchlist stocks: {exc}",
+            )
+            return
+
+        for entry in entries:
+            register_stock_instrument(entry.symbol, entry.config.strike_interval)
+            register_stock_instrument_key(entry.symbol, entry.config.instrument_key)
+        if entries:
+            self.controls.add_instruments([entry.symbol for entry in entries])
 
     def _set_title(self, instrument: str, suffix: str) -> None:
         self.setWindowTitle(f"Market Profile — {instrument} — {suffix}")
@@ -226,6 +257,10 @@ class MainWindow(QMainWindow):
         )
 
     def _on_option_chain_snapshot(self, snapshot: list, previous: list) -> None:
+        liquidity = check_liquidity(snapshot)
+        if not liquidity.is_liquid:
+            self.option_chain_panel.set_liquidity_flag(liquidity.reason)
+            return
         self.option_chain_panel.set_chain(snapshot, previous)
 
     def _on_live_error(self, message: str) -> None:

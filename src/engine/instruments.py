@@ -60,3 +60,29 @@ def get_instrument_config(instrument_key: str) -> InstrumentConfig:
             f"Unknown instrument '{instrument_key}'. "
             f"Available: {sorted(INSTRUMENTS)}"
         )
+
+
+def register_stock_instrument(symbol: str, strike_interval: float) -> InstrumentConfig:
+    """Register a watchlisted F&O stock as an instrument, deriving its
+    `value_step` from the stock's actual exchange-published strike
+    interval (via `instrument_master.py`) rather than a hardcoded
+    price-tier table — strike intervals are the most defensible default
+    since NSE/BSE already define them per-stock.
+
+    Session times / TPO period / IB periods are shared with the indices:
+    nothing in tpo.py or day_type.py reads instrument-specific behavior
+    beyond `InstrumentConfig` fields, so stocks need no engine changes —
+    confirmed by the existing Session 1 tests passing unmodified.
+    """
+    symbol = symbol.upper()
+    config = InstrumentConfig(
+        key=symbol,
+        exchange="NSE",
+        value_step=strike_interval,
+        market_open=time(9, 15),
+        market_close=time(15, 30),
+        tpo_period_minutes=30,
+        ib_periods=2,
+    )
+    INSTRUMENTS[symbol] = config
+    return config
