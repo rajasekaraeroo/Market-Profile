@@ -17,7 +17,7 @@ from src.alerts.signal_manager import SignalManager
 from src.data import upstox_auth
 from src.data.historical import fetch_historical_session
 from src.data.instrument_keys import get_instrument_key
-from src.data.live_feed import Bar, LiveFeed
+from src.data.live_feed import Bar, LiveFeed, UpstoxProtobufDecoder
 from src.data.instrument_keys import register_stock_instrument_key
 from src.data.liquidity_filter import check_liquidity
 from src.data.option_chain import OptionChainPoller, nearest_weekly_expiry
@@ -29,18 +29,6 @@ from src.ui.profile_widget import ProfileWidget
 from src.ui.session_controls import SessionControls
 from src.ui.signals_panel import SignalsPanel
 from src.ui.upstox_login_dialog import UpstoxLoginDialog
-
-
-class _NotImplementedDecoder:
-    """Placeholder until Upstox's published protobuf schema for the v3
-    market feed is wired in. Connecting in Live mode will surface this as
-    a clear error rather than failing silently."""
-
-    def decode(self, raw_message: bytes) -> list:
-        raise NotImplementedError(
-            "Live feed protobuf decoding is not implemented yet — see "
-            "src/data/live_feed.py for the MarketFeedDecoder interface."
-        )
 
 
 class OptionChainBridge(QObject):
@@ -217,10 +205,18 @@ class MainWindow(QMainWindow):
         self._latest_chain_snapshot = []
 
         upstox_key = get_instrument_key(instrument)
+        try:
+            decoder = UpstoxProtobufDecoder()
+        except ImportError as exc:
+            QMessageBox.critical(
+                self, "Live feed unavailable",
+                f"Could not load the Upstox market-feed decoder: {exc}",
+            )
+            return
         live_feed = LiveFeed(
             instrument_keys=[upstox_key],
             access_token=access_token,
-            decoder=_NotImplementedDecoder(),
+            decoder=decoder,
         )
 
         self._live_worker = LiveFeedWorker(live_feed)

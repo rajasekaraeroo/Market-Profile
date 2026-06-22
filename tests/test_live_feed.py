@@ -1,9 +1,18 @@
 import datetime as dt
+import json
 
 import pandas as pd
+import pytest
 
 from src.data.historical import HistoricalSessionResult
-from src.data.live_feed import Bar, BarAggregator, LiveFeed, Tick
+from src.data.live_feed import (
+    Bar,
+    BarAggregator,
+    LiveFeed,
+    Tick,
+    UpstoxProtobufDecoder,
+    build_subscribe_message,
+)
 
 
 def make_tick(minute: int, second: int, ltp: float, key="NIFTY") -> Tick:
@@ -98,3 +107,59 @@ def test_live_feed_backfills_gap_on_reconnect(monkeypatch):
     assert len(received_bars) == 2
     assert received_bars[-1].minute_start == dt.datetime(2024, 1, 2, 9, 16)
     assert received_bars[-1].close == 100.8
+
+
+def test_build_subscribe_message_shape():
+    raw = build_subscribe_message(["NSE_INDEX|Nifty 50"])
+    payload = json.loads(raw.decode("utf-8"))
+
+    assert payload["method"] == "sub"
+    assert payload["data"]["instrumentKeys"] == ["NSE_INDEX|Nifty 50"]
+    assert payload["data"]["mode"] == "ltpc"
+    assert "guid" in payload
+
+
+pytest.importorskip("upstox_client", reason="upstox-python-sdk not installed")
+
+
+def test_protobuf_decoder_decodes_ltpc_feed():
+    from upstox_client.feeder.proto import MarketDataFeedV3_pb2 as feed_pb2
+
+    response = feed_pb2.FeedResponse()
+    response.type = feed_pb2.Type.live_feed
+    feed = response.feeds["NSE_INDEX|Nifty 50"]
+    feed.ltpc.ltp = 25012.5
+    feed.ltpc.ltt = 1700000000000  # epoch millis
+
+    decoder = UpstoxProtobufDecoder()
+    ticks = decoder.decode(response.SerializeToString())
+
+    assert len(ticks) == 1
+    assert ticks[0].instrument_key == "NSE_INDEX|Nifty 50"
+    assert ticks[0].ltp == 25012.5
+    assert ticks[0].timestamp == dt.datetime.fromtimestamp(1700000000000 / 1000)
+
+
+def test_protobuf_decoder_skips_feeds_without_ltp():
+    from upstox_client.feeder.proto import MarketDataFeedV3_pb2 as feed_pb2
+
+    response = feed_pb2.FeedResponse()
+    response.feeds["NSE_INDEX|Nifty 50"]  # touch the map entry, leave it empty
+
+    decoder = UpstoxProtobufDecoder()
+    assert decoder.decode(response.SerializeToString()) == []
+
+
+def test_protobuf_decoder_reads_full_feed_index_mode():
+    from upstox_client.feeder.proto import MarketDataFeedV3_pb2 as feed_pb2
+
+    response = feed_pb2.FeedResponse()
+    feed = response.feeds["NSE_INDEX|Nifty Bank"]
+    feed.fullFeed.indexFF.ltpc.ltp = 51000.0
+    feed.fullFeed.indexFF.ltpc.ltt = 1700000000000
+
+    decoder = UpstoxProtobufDecoder()
+    ticks = decoder.decode(response.SerializeToString())
+
+    assert len(ticks) == 1
+    assert ticks[0].ltp == 51000.0

@@ -31,7 +31,9 @@ jobs:
 
       - name: Build EXE
         run: |
-          pyinstaller --onefile --windowed --name MarketProfile main.py
+          pyinstaller --onefile --windowed --name MarketProfile `
+            --hidden-import upstox_client.feeder.proto.MarketDataFeedV3_pb2 `
+            main.py
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
