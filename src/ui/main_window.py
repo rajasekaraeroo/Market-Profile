@@ -13,6 +13,7 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal
 from PyQt5.QtWidgets import QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget
 
 from src.alerts.alert_manager import AlertManager
+from src.alerts.signal_manager import SignalManager
 from src.data import upstox_auth
 from src.data.historical import fetch_historical_session
 from src.data.instrument_keys import get_instrument_key
@@ -26,6 +27,7 @@ from src.engine.profile import MarketProfile
 from src.ui.option_chain_panel import OptionChainPanel
 from src.ui.profile_widget import ProfileWidget
 from src.ui.session_controls import SessionControls
+from src.ui.signals_panel import SignalsPanel
 from src.ui.upstox_login_dialog import UpstoxLoginDialog
 
 
@@ -85,12 +87,15 @@ class MainWindow(QMainWindow):
         self.controls = SessionControls()
         self.profile_widget = ProfileWidget()
         self.option_chain_panel = OptionChainPanel()
+        self.signals_panel = SignalsPanel()
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.profile_widget, "Profile")
         self.tabs.addTab(self.option_chain_panel, "Option Chain")
-        # Option chain only makes sense in Live mode (Session 4 spec).
+        self.tabs.addTab(self.signals_panel, "Signals")
+        # Option chain and signals only make sense in Live mode.
         self.tabs.setTabEnabled(1, False)
+        self.tabs.setTabEnabled(2, False)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -114,6 +119,8 @@ class MainWindow(QMainWindow):
         self._option_chain_poller: OptionChainPoller | None = None
 
         self._alert_manager = AlertManager()
+        self._signal_manager = SignalManager(on_signal=self.signals_panel.add_signal)
+        self._latest_chain_snapshot: list[dict] = []
 
         self._liquid_instruments: set[str] = set()
         self._load_watchlist()
@@ -206,6 +213,8 @@ class MainWindow(QMainWindow):
         self._live_instrument = instrument
         self._period_count = 0
         self._alert_manager.reset_for_new_day(instrument)
+        self._signal_manager.reset_for_new_day(instrument)
+        self._latest_chain_snapshot = []
 
         upstox_key = get_instrument_key(instrument)
         live_feed = LiveFeed(
@@ -228,6 +237,7 @@ class MainWindow(QMainWindow):
         self._option_chain_poller = self._option_chain_bridge.poller
         self._option_chain_poller.start()
         self.tabs.setTabEnabled(1, True)
+        self.tabs.setTabEnabled(2, True)
 
         self._set_title(instrument, "LIVE")
         self.statusBar().showMessage(f"{instrument} | connecting live feed...")
@@ -241,6 +251,7 @@ class MainWindow(QMainWindow):
             self._option_chain_poller = None
             self._option_chain_bridge.poller = None
         self.tabs.setTabEnabled(1, False)
+        self.tabs.setTabEnabled(2, False)
 
     def _on_live_bar(self, bar: Bar) -> None:
         self._live_bars[bar.minute_start] = bar
@@ -268,8 +279,17 @@ class MainWindow(QMainWindow):
         self._alert_manager.check_and_alert(
             self._live_instrument, bar.close, self._period_count, profile_result, config
         )
+        self._signal_manager.check_and_signal(
+            self._live_instrument,
+            bar.close,
+            self._period_count,
+            profile_result,
+            config,
+            chain=self._latest_chain_snapshot,
+        )
 
     def _on_option_chain_snapshot(self, snapshot: list, previous: list) -> None:
+        self._latest_chain_snapshot = snapshot
         liquidity = check_liquidity(snapshot)
         if not liquidity.is_liquid:
             self.option_chain_panel.set_liquidity_flag(liquidity.reason)
