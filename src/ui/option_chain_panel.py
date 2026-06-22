@@ -16,6 +16,7 @@ from src.engine.profile import ProfileResult
 COLUMNS = ["CE OI Chg", "CE OI", "CE LTP", "CE IV", "Strike", "PE IV", "PE LTP", "PE OI", "PE OI Chg"]
 
 MAX_OI_TINT = QColor(255, 235, 150)
+MOMENTUM_COLOR = QColor(255, 140, 0)
 
 BUILDUP_COLORS = {
     OIBuildup.LONG_BUILDUP: QColor(180, 230, 180),
@@ -101,10 +102,17 @@ class OptionChainPanel(QWidget):
             ]
 
             for col, value in enumerate(values):
-                item = QTableWidgetItem(f"{value:g}" if isinstance(value, float) else str(value))
+                text = f"{value:g}" if isinstance(value, float) else str(value)
+                column_name = COLUMNS[col]
+
+                if column_name == "CE LTP" and ce.get("momentum"):
+                    text += " \U0001F525"  # fire — fast mover, breaking out + higher highs
+                elif column_name == "PE LTP" and pe.get("momentum"):
+                    text += " \U0001F525"
+
+                item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignCenter)
 
-                column_name = COLUMNS[col]
                 if column_name.startswith("CE") and strike == ce_max_strike:
                     item.setBackground(MAX_OI_TINT)
                 elif column_name.startswith("PE") and strike == pe_max_strike:
@@ -118,6 +126,13 @@ class OptionChainPanel(QWidget):
                     color = BUILDUP_COLORS[leg_buildup["PE"]]
                     if color is not None:
                         item.setBackground(color)
+
+                # Momentum flag takes priority — it's the most actionable
+                # signal in this table, so it overrides OI-buildup tinting.
+                if column_name == "CE LTP" and ce.get("momentum"):
+                    item.setBackground(MOMENTUM_COLOR)
+                elif column_name == "PE LTP" and pe.get("momentum"):
+                    item.setBackground(MOMENTUM_COLOR)
 
                 self.table.setItem(i, col, item)
 

@@ -18,14 +18,22 @@ import datetime as dt
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable
 
 import requests
 
+from src.engine.oi_analysis import detect_momentum_breakout
+
 OPTION_CHAIN_URL = "https://api.upstox.com/v2/option/chain"
 
 DEFAULT_POLL_INTERVAL_SECONDS = 4
+
+# Rolling window for the "fast mover" flag: a leg whose latest LTP is a
+# fresh high versus everything polled in the last 5 minutes reads as
+# breaking out and making higher highs on that timeframe.
+MOMENTUM_WINDOW_SECONDS = 300
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +115,25 @@ class OptionChainPoller:
 
     _thread: threading.Thread | None = field(default=None, repr=False)
     _running: bool = field(default=False, repr=False)
+    _history: dict[tuple[float, str], deque] = field(default_factory=dict, repr=False)
+
+    def _update_momentum(self, snapshot: list[dict], now: float) -> None:
+        """Mutates each leg in-place, adding a "momentum" bool: True if
+        this leg's LTP is a fresh high over the trailing 5-minute window
+        of polls (breakout + higher high)."""
+        cutoff = now - MOMENTUM_WINDOW_SECONDS
+        for row in snapshot:
+            strike = row["strike"]
+            for option_type in ("CE", "PE"):
+                leg = row.get(option_type)
+                if not leg:
+                    continue
+                key = (strike, option_type)
+                history = self._history.setdefault(key, deque())
+                history.append((now, leg["ltp"]))
+                while history and history[0][0] < cutoff:
+                    history.popleft()
+                leg["momentum"] = detect_momentum_breakout(list(history))
 
     def _poll_once(self) -> None:
         try:
@@ -116,6 +143,7 @@ class OptionChainPoller:
         except Exception:
             logger.exception("Option chain poll failed")
             return
+        self._update_momentum(snapshot, time.time())
         self.previous = self.latest
         self.latest = snapshot
         if self.on_snapshot is not None:

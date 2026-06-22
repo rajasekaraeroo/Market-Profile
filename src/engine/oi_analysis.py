@@ -62,6 +62,18 @@ def _classify_leg(price_change: float, oi_change: float) -> OIBuildup:
     return OIBuildup.NEUTRAL
 
 
+def detect_momentum_breakout(history: list[tuple[float, float]]) -> bool:
+    """Given a leg's (timestamp, ltp) samples within a trailing window
+    (oldest first), True if the latest sample is a fresh high versus
+    everything before it in the window — i.e. it has broken out past the
+    recent range *and* made a higher high, in one check. Needs at least
+    one prior sample to mean anything."""
+    if len(history) < 2:
+        return False
+    *prior, (_, latest_ltp) = history
+    return latest_ltp > max(ltp for _, ltp in prior)
+
+
 def oi_buildup(
     chain_now: list[dict], chain_prev: list[dict]
 ) -> dict[float, dict[OptionType, OIBuildup]]:
