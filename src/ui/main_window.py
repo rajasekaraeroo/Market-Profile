@@ -26,6 +26,7 @@ from src.engine.profile import MarketProfile
 from src.ui.option_chain_panel import OptionChainPanel
 from src.ui.profile_widget import ProfileWidget
 from src.ui.session_controls import SessionControls
+from src.ui.upstox_login_dialog import UpstoxLoginDialog
 
 
 class _NotImplementedDecoder:
@@ -154,11 +155,25 @@ class MainWindow(QMainWindow):
             f"IB {result.day_type.ib_low:g}-{result.day_type.ib_high:g}"
         )
 
-    def _load_historical(self, instrument: str, date: dt.date) -> None:
+    def _get_access_token_or_login(self) -> str | None:
+        """Return today's access token, prompting the GUI login dialog if
+        none is cached yet — so an EXE-only user (no Python/terminal) can
+        still complete the daily Upstox login."""
         try:
-            access_token = upstox_auth.get_access_token()
+            return upstox_auth.get_access_token()
+        except RuntimeError:
+            dialog = UpstoxLoginDialog(self)
+            if dialog.exec_() != UpstoxLoginDialog.Accepted:
+                return None
+        try:
+            return upstox_auth.get_access_token()
         except RuntimeError as exc:
             QMessageBox.warning(self, "Not authenticated", str(exc))
+            return None
+
+    def _load_historical(self, instrument: str, date: dt.date) -> None:
+        access_token = self._get_access_token_or_login()
+        if access_token is None:
             return
 
         upstox_key = get_instrument_key(instrument)
@@ -182,10 +197,8 @@ class MainWindow(QMainWindow):
         self._set_title(instrument, date.isoformat())
 
     def _start_live(self, instrument: str) -> None:
-        try:
-            access_token = upstox_auth.get_access_token()
-        except RuntimeError as exc:
-            QMessageBox.warning(self, "Not authenticated", str(exc))
+        access_token = self._get_access_token_or_login()
+        if access_token is None:
             return
 
         self._stop_live()
