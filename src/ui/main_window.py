@@ -26,6 +26,7 @@ from src.data.watchlist import WatchlistError, load_watchlist
 from src.engine.instruments import get_instrument_config, register_stock_instrument
 from src.engine.profile import MarketProfile
 from src.engine.replay import ReplayEngine
+from src.engine.signal_config import load_signal_thresholds
 from src.ui.option_chain_panel import OptionChainPanel
 from src.ui.profile_widget import ProfileWidget
 from src.ui.session_controls import SessionControls
@@ -119,7 +120,9 @@ class MainWindow(QMainWindow):
         self._alert_manager = AlertManager()
         self._signal_journal = SignalJournal()
         self._signal_manager = SignalManager(
-            on_signal=self.signals_panel.add_signal, journal=self._signal_journal
+            on_signal=self.signals_panel.add_signal,
+            journal=self._signal_journal,
+            thresholds=load_signal_thresholds(),
         )
         self.signals_panel.load_history(self._signal_journal.read_all())
         self._latest_chain_snapshot: list[dict] = []

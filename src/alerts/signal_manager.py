@@ -13,6 +13,7 @@ from src.alerts.signal_journal import SignalJournal
 from src.alerts.telegram_notifier import send_alert
 from src.engine.instruments import InstrumentConfig
 from src.engine.profile import ProfileResult
+from src.engine.signal_config import SignalThresholds
 from src.engine.signals import (
     DayTypeFinalizedSignal,
     IBBreakoutSignal,
@@ -21,17 +22,19 @@ from src.engine.signals import (
     VARejectionSignal,
 )
 
-MIN_SECONDS_BETWEEN_SIGNALS = 120
-
 
 @dataclass
 class _InstrumentSignalTriggers:
+    thresholds: SignalThresholds = field(default_factory=SignalThresholds)
     ib_breakout: IBBreakoutSignal = field(default_factory=IBBreakoutSignal)
-    va_rejection: VARejectionSignal = field(default_factory=VARejectionSignal)
-    poc_migration: POCMigrationSignal = field(default_factory=POCMigrationSignal)
-    day_type_finalized: DayTypeFinalizedSignal = field(
-        default_factory=DayTypeFinalizedSignal
-    )
+    va_rejection: VARejectionSignal = field(init=False)
+    poc_migration: POCMigrationSignal = field(init=False)
+    day_type_finalized: DayTypeFinalizedSignal = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.va_rejection = VARejectionSignal(thresholds=self.thresholds)
+        self.poc_migration = POCMigrationSignal(thresholds=self.thresholds)
+        self.day_type_finalized = DayTypeFinalizedSignal(thresholds=self.thresholds)
 
     def reset(self) -> None:
         self.ib_breakout.reset()
@@ -46,15 +49,19 @@ class SignalManager:
         notifier: Callable[[str], bool] = send_alert,
         on_signal: Callable[[TradeSignal], None] | None = None,
         journal: SignalJournal | None = None,
+        thresholds: SignalThresholds = SignalThresholds(),
     ):
         self._notifier = notifier
         self._on_signal = on_signal
         self._journal = journal
+        self._thresholds = thresholds
         self._triggers: dict[str, _InstrumentSignalTriggers] = {}
         self._last_signal_time: dict[str, dt.datetime] = {}
 
     def _triggers_for(self, instrument: str) -> _InstrumentSignalTriggers:
-        return self._triggers.setdefault(instrument, _InstrumentSignalTriggers())
+        return self._triggers.setdefault(
+            instrument, _InstrumentSignalTriggers(thresholds=self._thresholds)
+        )
 
     def reset_for_new_day(self, instrument: str) -> None:
         self._triggers_for(instrument).reset()
@@ -62,7 +69,10 @@ class SignalManager:
 
     def _rate_limited(self, instrument: str, now: dt.datetime) -> bool:
         last = self._last_signal_time.get(instrument)
-        return last is not None and (now - last).total_seconds() < MIN_SECONDS_BETWEEN_SIGNALS
+        return (
+            last is not None
+            and (now - last).total_seconds() < self._thresholds.min_seconds_between_signals
+        )
 
     def _maybe_emit(
         self, instrument: str, signal: TradeSignal | None, now: dt.datetime
@@ -106,6 +116,7 @@ class SignalManager:
                 bar_close,
                 profile_result.va_low,
                 profile_result.va_high,
+                day_type,
                 config,
                 chain,
             ),
@@ -113,7 +124,9 @@ class SignalManager:
         )
         self._maybe_emit(
             instrument,
-            triggers.poc_migration.check(instrument, profile_result.poc, config, chain),
+            triggers.poc_migration.check(
+                instrument, profile_result.poc, day_type, config, chain
+            ),
             now,
         )
         self._maybe_emit(

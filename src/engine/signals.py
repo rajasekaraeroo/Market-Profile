@@ -8,18 +8,13 @@ a good idea. No order placement, no position sizing — direction + context
 only, for a human to act on manually in Upstox.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from src.engine.day_type import DayType, DayTypeResult
 from src.engine.instruments import InstrumentConfig
 from src.engine.oi_analysis import OptionType, max_oi_strike
-
-# Same window/threshold conventions as triggers.py, so the signal layer
-# fires in lockstep with the alert layer.
-VA_REJECTION_WINDOW_BARS = 3
-POC_MIGRATION_THRESHOLD_ROWS = 4
-DAY_TYPE_FINALIZE_AFTER_PERIODS = 8
+from src.engine.signal_config import SignalThresholds
 
 
 class Direction(str, Enum):
@@ -34,6 +29,7 @@ class TradeSignal:
     reason: str
     trigger_price: float
     suggested_strike: float | None = None
+    stop_loss: float | None = None
 
     def format(self) -> str:
         strike_part = (
@@ -41,10 +37,11 @@ class TradeSignal:
             if self.suggested_strike is not None
             else ""
         )
+        stop_part = f" Stop-loss: {self.stop_loss:g}." if self.stop_loss is not None else ""
         return (
             f"{self.instrument}: BUY {self.direction.value} — {self.reason}"
-            f"{strike_part} (Signal only — not a recommendation; size and "
-            f"execute at your own discretion.)"
+            f"{strike_part}{stop_part} (Signal only — not a recommendation; size "
+            f"and execute at your own discretion.)"
         )
 
 
@@ -69,6 +66,18 @@ def suggest_strike(
     if not step:
         return None
     return round(price / step) * step
+
+
+def suggest_stop_loss(direction: Direction, day_type: DayTypeResult) -> float | None:
+    """The level that invalidates the signal's thesis: for a CE buy, the
+    session's IB low (price falling back inside/below the initial range
+    means the breakout/migration that triggered the signal failed); for a
+    PE buy, the IB high, mirrored. Same IB reference for every signal type
+    rather than a per-signal stop, since IB is the one structural
+    reference every signal already shares."""
+    if day_type.day_type == DayType.INSUFFICIENT_DATA:
+        return None
+    return day_type.ib_low if direction == Direction.CE else day_type.ib_high
 
 
 @dataclass
@@ -99,6 +108,7 @@ class IBBreakoutSignal:
                 reason=f"IB breakout above {day_type.ib_high:g} (IB high)",
                 trigger_price=bar_close,
                 suggested_strike=suggest_strike(bar_close, config, chain, Direction.CE),
+                stop_loss=suggest_stop_loss(Direction.CE, day_type),
             )
 
         if bar_close < day_type.ib_low and not self.alerted_down:
@@ -109,6 +119,7 @@ class IBBreakoutSignal:
                 reason=f"IB breakout below {day_type.ib_low:g} (IB low)",
                 trigger_price=bar_close,
                 suggested_strike=suggest_strike(bar_close, config, chain, Direction.PE),
+                stop_loss=suggest_stop_loss(Direction.PE, day_type),
             )
 
         return None
@@ -124,6 +135,7 @@ class VARejectionSignal:
     as a failed breakout — bearish, buy PE. Rejection at VA low reads
     bullish, buy CE."""
 
+    thresholds: SignalThresholds = field(default_factory=SignalThresholds)
     in_excursion: bool = False
     excursion_above: bool = False
     bars_outside: int = 0
@@ -134,6 +146,7 @@ class VARejectionSignal:
         bar_close: float,
         va_low: float,
         va_high: float,
+        day_type: DayTypeResult,
         config: InstrumentConfig,
         chain: list[dict] | None = None,
     ) -> TradeSignal | None:
@@ -154,7 +167,7 @@ class VARejectionSignal:
             was_above = self.excursion_above
             self.in_excursion = False
             self.bars_outside = 0
-            if bars_outside <= VA_REJECTION_WINDOW_BARS:
+            if bars_outside <= self.thresholds.va_rejection_window_bars:
                 direction = Direction.PE if was_above else Direction.CE
                 side = "VA high" if was_above else "VA low"
                 return TradeSignal(
@@ -162,6 +175,7 @@ class VARejectionSignal:
                     direction=direction,
                     reason=f"VA rejection at {side} ({va_low:g}-{va_high:g})",
                     trigger_price=bar_close,
+                    stop_loss=suggest_stop_loss(direction, day_type),
                     suggested_strike=suggest_strike(bar_close, config, chain, direction),
                 )
         return None
@@ -178,12 +192,14 @@ class POCMigrationSignal:
     acceptance — migrating up is bullish (buy CE), down is bearish (buy
     PE)."""
 
+    thresholds: SignalThresholds = field(default_factory=SignalThresholds)
     last_alerted_poc: float | None = None
 
     def check(
         self,
         instrument: str,
         poc: float,
+        day_type: DayTypeResult,
         config: InstrumentConfig,
         chain: list[dict] | None = None,
     ) -> TradeSignal | None:
@@ -191,7 +207,7 @@ class POCMigrationSignal:
             self.last_alerted_poc = poc
             return None
 
-        threshold = POC_MIGRATION_THRESHOLD_ROWS * config.value_step
+        threshold = self.thresholds.poc_migration_threshold_rows * config.value_step
         if abs(poc - self.last_alerted_poc) >= threshold:
             previous = self.last_alerted_poc
             self.last_alerted_poc = poc
@@ -202,6 +218,7 @@ class POCMigrationSignal:
                 reason=f"POC migration from {previous:g} to {poc:g}",
                 trigger_price=poc,
                 suggested_strike=suggest_strike(poc, config, chain, direction),
+                stop_loss=suggest_stop_loss(direction, day_type),
             )
 
         return None
@@ -215,6 +232,7 @@ class DayTypeFinalizedSignal:
     """Once day type is settled, summarize with a directional bias toward
     whichever side extended further beyond IB."""
 
+    thresholds: SignalThresholds = field(default_factory=SignalThresholds)
     fired: bool = False
 
     def check(
@@ -229,7 +247,7 @@ class DayTypeFinalizedSignal:
         if self.fired or day_type.day_type == DayType.INSUFFICIENT_DATA:
             return None
 
-        if period_count >= DAY_TYPE_FINALIZE_AFTER_PERIODS:
+        if period_count >= self.thresholds.day_type_finalize_after_periods:
             self.fired = True
             direction = (
                 Direction.CE
@@ -239,6 +257,7 @@ class DayTypeFinalizedSignal:
             return TradeSignal(
                 instrument=instrument,
                 direction=direction,
+                stop_loss=suggest_stop_loss(direction, day_type),
                 reason=(
                     f"Day type finalized — {day_type.day_type.value} "
                     f"(extension up {day_type.extension_up_multiple:.1f}x IB, "

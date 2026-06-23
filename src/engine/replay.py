@@ -17,6 +17,7 @@ import pandas as pd
 from src.alerts.signal_manager import SignalManager
 from src.engine.instruments import InstrumentConfig
 from src.engine.profile import MarketProfile, ProfileResult
+from src.engine.signal_config import load_signal_thresholds
 from src.engine.signals import TradeSignal
 
 
@@ -42,6 +43,7 @@ class ReplayEngine:
         return SignalManager(
             notifier=lambda _msg: True,
             on_signal=self._collected_signals.append,
+            thresholds=load_signal_thresholds(),
         )
 
     def __len__(self) -> int:
