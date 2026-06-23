@@ -20,6 +20,14 @@ class SignalsPanel(QWidget):
         timestamp = dt.datetime.now().strftime("%H:%M:%S")
         self._add_row(timestamp, signal.format(), signal.direction)
 
+    def add_replay_signal(self, signal: TradeSignal, timestamp: dt.datetime) -> None:
+        """Same as add_signal, but tagged [REPLAY] and timestamped from the
+        historical bar rather than wall-clock time, so it's never mistaken
+        for a real fired signal in the journal/log."""
+        self._add_row(
+            timestamp.strftime("%H:%M:%S"), f"[REPLAY] {signal.format()}", signal.direction
+        )
+
     def load_history(self, rows: list[dict]) -> None:
         """Populate the panel with previously journaled signals (e.g. from
         earlier sessions/days) on startup, so the log isn't wiped by a

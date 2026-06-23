@@ -9,7 +9,7 @@ signal/slot mechanism, which is thread-safe by design.
 import datetime as dt
 
 import pandas as pd
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Signal
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget
 
 from src.alerts.alert_manager import AlertManager
@@ -25,11 +25,16 @@ from src.data.option_chain import OptionChainPoller, nearest_weekly_expiry
 from src.data.watchlist import WatchlistError, load_watchlist
 from src.engine.instruments import get_instrument_config, register_stock_instrument
 from src.engine.profile import MarketProfile
+from src.engine.replay import ReplayEngine
 from src.ui.option_chain_panel import OptionChainPanel
 from src.ui.profile_widget import ProfileWidget
 from src.ui.session_controls import SessionControls
 from src.ui.signals_panel import SignalsPanel
 from src.ui.upstox_login_dialog import UpstoxLoginDialog
+
+# Fast enough to watch a full session unfold in well under a minute,
+# slow enough to actually see signals appear rather than flash by.
+REPLAY_STEP_INTERVAL_MS = 150
 
 
 class OptionChainBridge(QObject):
@@ -97,11 +102,15 @@ class MainWindow(QMainWindow):
         self.controls.load_historical_requested.connect(self._load_historical)
         self.controls.start_live_requested.connect(self._start_live)
         self.controls.stop_live_requested.connect(self._stop_live)
+        self.controls.replay_requested.connect(self._start_replay)
 
         self._live_worker: LiveFeedWorker | None = None
         self._live_bars: dict[dt.datetime, Bar] = {}
         self._live_instrument: str | None = None
         self._period_count = 0
+
+        self._replay_engine: ReplayEngine | None = None
+        self._replay_timer: QTimer | None = None
 
         self._option_chain_bridge = OptionChainBridge()
         self._option_chain_bridge.snapshot_received.connect(self._on_option_chain_snapshot)
@@ -172,6 +181,7 @@ class MainWindow(QMainWindow):
             return None
 
     def _load_historical(self, instrument: str, date: dt.date) -> None:
+        self._stop_replay()
         access_token = self._get_access_token_or_login()
         if access_token is None:
             return
@@ -197,6 +207,7 @@ class MainWindow(QMainWindow):
         self._set_title(instrument, date.isoformat())
 
     def _start_live(self, instrument: str) -> None:
+        self._stop_replay()
         access_token = self._get_access_token_or_login()
         if access_token is None:
             return
@@ -254,6 +265,62 @@ class MainWindow(QMainWindow):
         self.tabs.setTabEnabled(1, False)
         self.tabs.setTabEnabled(2, False)
 
+    def _start_replay(self, instrument: str, date: dt.date) -> None:
+        """Step through an already-completed session bar by bar, so a
+        customer can see how IB/day-type/signals would have unfolded
+        without waiting for a live session — the cheapest way to
+        demonstrate the tool actually works."""
+        self._stop_live()
+        self._stop_replay()
+        access_token = self._get_access_token_or_login()
+        if access_token is None:
+            return
+
+        upstox_key = get_instrument_key(instrument)
+        try:
+            result = fetch_historical_session(upstox_key, date, access_token)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Cannot load session", str(exc))
+            return
+
+        if result.is_partial_or_missing and result.df.empty:
+            QMessageBox.information(
+                self, "No data", f"No session data for {instrument} on {date} "
+                "(likely a holiday)."
+            )
+            return
+
+        self._live_instrument = instrument
+        config = get_instrument_config(instrument)
+        self._replay_engine = ReplayEngine(instrument, result.df, config)
+
+        self._replay_timer = QTimer(self)
+        self._replay_timer.timeout.connect(self._step_replay)
+        self.tabs.setTabEnabled(1, False)
+        self.tabs.setTabEnabled(2, True)
+        self._set_title(instrument, f"REPLAY {date.isoformat()}")
+        self.statusBar().showMessage(f"{instrument} | replaying {date} ...")
+        self._replay_timer.start(REPLAY_STEP_INTERVAL_MS)
+
+    def _step_replay(self) -> None:
+        step = self._replay_engine.step()
+        if step is None:
+            self._stop_replay()
+            self.statusBar().showMessage(f"{self._live_instrument} | replay finished")
+            return
+
+        config = get_instrument_config(self._live_instrument)
+        self.profile_widget.set_profile(step.profile_result, config)
+        self._update_status_bar(self._live_instrument, step.profile_result)
+        for signal in step.signals:
+            self.signals_panel.add_replay_signal(signal, step.timestamp)
+
+    def _stop_replay(self) -> None:
+        if self._replay_timer is not None:
+            self._replay_timer.stop()
+            self._replay_timer = None
+        self._replay_engine = None
+
     def _on_live_bar(self, bar: Bar) -> None:
         self._live_bars[bar.minute_start] = bar
         rows = sorted(self._live_bars.items())
@@ -302,4 +369,5 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._stop_live()
+        self._stop_replay()
         super().closeEvent(event)

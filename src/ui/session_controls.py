@@ -32,6 +32,7 @@ class SessionControls(QWidget):
     load_historical_requested = Signal(str, dt.date)
     start_live_requested = Signal(str)
     stop_live_requested = Signal()
+    replay_requested = Signal(str, dt.date)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -43,7 +44,7 @@ class SessionControls(QWidget):
         )
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Historical", "Live"])
+        self.mode_combo.addItems(["Historical", "Live", "Replay"])
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
 
         self.date_picker = QDateEdit()
@@ -69,6 +70,7 @@ class SessionControls(QWidget):
 
     def _on_mode_changed(self, mode: str) -> None:
         is_live = mode == "Live"
+        is_replay = mode == "Replay"
         self.date_picker.setVisible(not is_live)
 
         if is_live and not is_within_market_hours():
@@ -80,7 +82,12 @@ class SessionControls(QWidget):
             self.action_button.setEnabled(True)
             self.market_hours_label.setText("")
 
-        self.action_button.setText("Start Live" if is_live else "Load")
+        if is_live:
+            self.action_button.setText("Start Live")
+        elif is_replay:
+            self.action_button.setText("Start Replay")
+        else:
+            self.action_button.setText("Load")
 
     def add_instruments(self, symbols: list[str]) -> None:
         """Append watchlisted stocks to the instrument dropdown, alongside
@@ -90,9 +97,14 @@ class SessionControls(QWidget):
 
     def _on_action_clicked(self) -> None:
         instrument = self.instrument_combo.currentText()
-        if self.mode_combo.currentText() == "Live":
+        mode = self.mode_combo.currentText()
+        if mode == "Live":
             self.start_live_requested.emit(instrument)
+            return
+
+        qdate = self.date_picker.date()
+        date = dt.date(qdate.year(), qdate.month(), qdate.day())
+        if mode == "Replay":
+            self.replay_requested.emit(instrument, date)
         else:
-            qdate = self.date_picker.date()
-            date = dt.date(qdate.year(), qdate.month(), qdate.day())
             self.load_historical_requested.emit(instrument, date)
