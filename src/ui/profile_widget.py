@@ -6,9 +6,9 @@ with QPainter. This widget does no computation of its own; it only renders
 whatever `ProfileResult` (from Session 1's engine) it's given.
 """
 
-from PyQt5.QtCore import QRectF, Qt
-from PyQt5.QtGui import QColor, QFont, QPainter, QPen
-from PyQt5.QtWidgets import QWidget
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtWidgets import QWidget
 
 from src.engine.day_type import DayType
 from src.engine.instruments import InstrumentConfig

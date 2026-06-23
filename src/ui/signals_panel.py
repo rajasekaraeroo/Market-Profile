@@ -4,7 +4,7 @@ without needing Telegram."""
 
 import datetime as dt
 
-from PyQt5.QtWidgets import QListWidget, QListWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 
 from src.engine.signals import Direction, TradeSignal
 
@@ -27,6 +27,6 @@ class SignalsPanel(QWidget):
 
     @staticmethod
     def _color(name: str):
-        from PyQt5.QtGui import QColor
+        from PySide6.QtGui import QColor
 
         return QColor(name)

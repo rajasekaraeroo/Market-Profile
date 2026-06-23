@@ -5,9 +5,9 @@ Only meaningful in Live mode — historical option-chain backtesting is out
 of scope (Session 4 spec).
 """
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from src.engine.day_type import DayType
 from src.engine.oi_analysis import OIBuildup, max_oi_strike, oi_buildup, pcr

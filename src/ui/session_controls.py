@@ -7,8 +7,8 @@ signals to Session 1/2 calls.
 
 import datetime as dt
 
-from PyQt5.QtCore import QDate, pyqtSignal
-from PyQt5.QtWidgets import (
+from PySide6.QtCore import QDate, Signal
+from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QHBoxLayout,
@@ -28,10 +28,10 @@ def is_within_market_hours(now: dt.datetime | None = None) -> bool:
 
 
 class SessionControls(QWidget):
-    instrument_changed = pyqtSignal(str)
-    load_historical_requested = pyqtSignal(str, dt.date)
-    start_live_requested = pyqtSignal(str)
-    stop_live_requested = pyqtSignal()
+    instrument_changed = Signal(str)
+    load_historical_requested = Signal(str, dt.date)
+    start_live_requested = Signal(str)
+    stop_live_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)

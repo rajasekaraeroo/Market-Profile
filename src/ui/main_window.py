@@ -9,8 +9,8 @@ signal/slot mechanism, which is thread-safe by design.
 import datetime as dt
 
 import pandas as pd
-from PyQt5.QtCore import QObject, QThread, pyqtSignal
-from PyQt5.QtWidgets import QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtWidgets import QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget
 
 from src.alerts.alert_manager import AlertManager
 from src.alerts.signal_manager import SignalManager
@@ -35,7 +35,7 @@ class OptionChainBridge(QObject):
     """Bridges OptionChainPoller's background-thread callback into a Qt
     signal so the panel only ever updates on the UI thread."""
 
-    snapshot_received = pyqtSignal(list, list)
+    snapshot_received = Signal(list, list)
 
     def make_callback(self):
         def _on_snapshot(snapshot: list[dict]) -> None:
@@ -49,8 +49,8 @@ class OptionChainBridge(QObject):
 
 
 class LiveFeedWorker(QThread):
-    bar_received = pyqtSignal(object)
-    error = pyqtSignal(str)
+    bar_received = Signal(object)
+    error = Signal(str)
 
     def __init__(self, live_feed: LiveFeed, parent=None):
         super().__init__(parent)
@@ -158,7 +158,7 @@ class MainWindow(QMainWindow):
             return upstox_auth.get_access_token()
         except RuntimeError:
             dialog = UpstoxLoginDialog(self)
-            if dialog.exec_() != UpstoxLoginDialog.Accepted:
+            if dialog.exec() != UpstoxLoginDialog.Accepted:
                 return None
         try:
             return upstox_auth.get_access_token()
