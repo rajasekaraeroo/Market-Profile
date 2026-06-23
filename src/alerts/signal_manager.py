@@ -9,6 +9,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from typing import Callable
 
+from src.alerts.signal_journal import SignalJournal
 from src.alerts.telegram_notifier import send_alert
 from src.engine.instruments import InstrumentConfig
 from src.engine.profile import ProfileResult
@@ -44,9 +45,11 @@ class SignalManager:
         self,
         notifier: Callable[[str], bool] = send_alert,
         on_signal: Callable[[TradeSignal], None] | None = None,
+        journal: SignalJournal | None = None,
     ):
         self._notifier = notifier
         self._on_signal = on_signal
+        self._journal = journal
         self._triggers: dict[str, _InstrumentSignalTriggers] = {}
         self._last_signal_time: dict[str, dt.datetime] = {}
 
@@ -71,6 +74,8 @@ class SignalManager:
         self._notifier(signal.format())
         if self._on_signal is not None:
             self._on_signal(signal)
+        if self._journal is not None:
+            self._journal.record(signal, now)
         self._last_signal_time[instrument] = now
 
     def check_and_signal(

@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget
 
 from src.alerts.alert_manager import AlertManager
+from src.alerts.signal_journal import SignalJournal
 from src.alerts.signal_manager import SignalManager
 from src.data import upstox_auth
 from src.data.historical import fetch_historical_session
@@ -107,7 +108,11 @@ class MainWindow(QMainWindow):
         self._option_chain_poller: OptionChainPoller | None = None
 
         self._alert_manager = AlertManager()
-        self._signal_manager = SignalManager(on_signal=self.signals_panel.add_signal)
+        self._signal_journal = SignalJournal()
+        self._signal_manager = SignalManager(
+            on_signal=self.signals_panel.add_signal, journal=self._signal_journal
+        )
+        self.signals_panel.load_history(self._signal_journal.read_all())
         self._latest_chain_snapshot: list[dict] = []
 
         self._liquid_instruments: set[str] = set()
