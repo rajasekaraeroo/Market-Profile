@@ -9,45 +9,41 @@ signal/slot mechanism, which is thread-safe by design.
 import datetime as dt
 
 import pandas as pd
-from PyQt5.QtCore import QObject, QThread, pyqtSignal
-from PyQt5.QtWidgets import QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtWidgets import QMainWindow, QMessageBox, QTabWidget, QVBoxLayout, QWidget
 
 from src.alerts.alert_manager import AlertManager
+from src.alerts.signal_journal import SignalJournal
 from src.alerts.signal_manager import SignalManager
 from src.data import upstox_auth
 from src.data.historical import fetch_historical_session
 from src.data.instrument_keys import get_instrument_key
-from src.data.live_feed import Bar, LiveFeed
+from src.data.live_feed import Bar, LiveFeed, UpstoxProtobufDecoder
 from src.data.instrument_keys import register_stock_instrument_key
 from src.data.liquidity_filter import check_liquidity
 from src.data.option_chain import OptionChainPoller, nearest_weekly_expiry
 from src.data.watchlist import WatchlistError, load_watchlist
 from src.engine.instruments import get_instrument_config, register_stock_instrument
 from src.engine.profile import MarketProfile
+from src.engine.replay import ReplayEngine
+from src.engine.signal_config import load_signal_thresholds
+from src.ui.dashboard_panel import DashboardPanel
 from src.ui.option_chain_panel import OptionChainPanel
 from src.ui.profile_widget import ProfileWidget
-from src.ui.session_controls import SessionControls
+from src.ui.session_controls import INSTRUMENTS, SessionControls
 from src.ui.signals_panel import SignalsPanel
 from src.ui.upstox_login_dialog import UpstoxLoginDialog
 
-
-class _NotImplementedDecoder:
-    """Placeholder until Upstox's published protobuf schema for the v3
-    market feed is wired in. Connecting in Live mode will surface this as
-    a clear error rather than failing silently."""
-
-    def decode(self, raw_message: bytes) -> list:
-        raise NotImplementedError(
-            "Live feed protobuf decoding is not implemented yet — see "
-            "src/data/live_feed.py for the MarketFeedDecoder interface."
-        )
+# Fast enough to watch a full session unfold in well under a minute,
+# slow enough to actually see signals appear rather than flash by.
+REPLAY_STEP_INTERVAL_MS = 150
 
 
 class OptionChainBridge(QObject):
     """Bridges OptionChainPoller's background-thread callback into a Qt
     signal so the panel only ever updates on the UI thread."""
 
-    snapshot_received = pyqtSignal(list, list)
+    snapshot_received = Signal(list, list)
 
     def make_callback(self):
         def _on_snapshot(snapshot: list[dict]) -> None:
@@ -61,8 +57,8 @@ class OptionChainBridge(QObject):
 
 
 class LiveFeedWorker(QThread):
-    bar_received = pyqtSignal(object)
-    error = pyqtSignal(str)
+    bar_received = Signal(object)
+    error = Signal(str)
 
     def __init__(self, live_feed: LiveFeed, parent=None):
         super().__init__(parent)
@@ -88,14 +84,17 @@ class MainWindow(QMainWindow):
         self.profile_widget = ProfileWidget()
         self.option_chain_panel = OptionChainPanel()
         self.signals_panel = SignalsPanel()
+        self.dashboard_panel = DashboardPanel()
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.profile_widget, "Profile")
         self.tabs.addTab(self.option_chain_panel, "Option Chain")
         self.tabs.addTab(self.signals_panel, "Signals")
-        # Option chain and signals only make sense in Live mode.
+        self.tabs.addTab(self.dashboard_panel, "Watchlist Dashboard")
+        # Option chain, signals, and the dashboard only make sense in Live mode.
         self.tabs.setTabEnabled(1, False)
         self.tabs.setTabEnabled(2, False)
+        self.tabs.setTabEnabled(3, False)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -108,18 +107,30 @@ class MainWindow(QMainWindow):
         self.controls.load_historical_requested.connect(self._load_historical)
         self.controls.start_live_requested.connect(self._start_live)
         self.controls.stop_live_requested.connect(self._stop_live)
+        self.controls.replay_requested.connect(self._start_replay)
 
         self._live_worker: LiveFeedWorker | None = None
-        self._live_bars: dict[dt.datetime, Bar] = {}
+        self._live_bars: dict[str, dict[dt.datetime, Bar]] = {}
         self._live_instrument: str | None = None
         self._period_count = 0
+        self._dashboard_symbols: list[str] = list(INSTRUMENTS)
+        self._key_to_symbol: dict[str, str] = {}
+
+        self._replay_engine: ReplayEngine | None = None
+        self._replay_timer: QTimer | None = None
 
         self._option_chain_bridge = OptionChainBridge()
         self._option_chain_bridge.snapshot_received.connect(self._on_option_chain_snapshot)
         self._option_chain_poller: OptionChainPoller | None = None
 
         self._alert_manager = AlertManager()
-        self._signal_manager = SignalManager(on_signal=self.signals_panel.add_signal)
+        self._signal_journal = SignalJournal()
+        self._signal_manager = SignalManager(
+            on_signal=self._on_signal_emitted,
+            journal=self._signal_journal,
+            thresholds=load_signal_thresholds(),
+        )
+        self.signals_panel.load_history(self._signal_journal.read_all())
         self._latest_chain_snapshot: list[dict] = []
 
         self._liquid_instruments: set[str] = set()
@@ -151,6 +162,11 @@ class MainWindow(QMainWindow):
             register_stock_instrument_key(entry.symbol, entry.config.instrument_key)
         if entries:
             self.controls.add_instruments([entry.symbol for entry in entries])
+            self._dashboard_symbols.extend(entry.symbol for entry in entries)
+
+    def _on_signal_emitted(self, signal) -> None:
+        self.signals_panel.add_signal(signal)
+        self.dashboard_panel.set_last_signal(signal.instrument, signal.format())
 
     def _set_title(self, instrument: str, suffix: str) -> None:
         self.setWindowTitle(f"Market Profile — {instrument} — {suffix}")
@@ -170,7 +186,7 @@ class MainWindow(QMainWindow):
             return upstox_auth.get_access_token()
         except RuntimeError:
             dialog = UpstoxLoginDialog(self)
-            if dialog.exec_() != UpstoxLoginDialog.Accepted:
+            if dialog.exec() != UpstoxLoginDialog.Accepted:
                 return None
         try:
             return upstox_auth.get_access_token()
@@ -179,6 +195,7 @@ class MainWindow(QMainWindow):
             return None
 
     def _load_historical(self, instrument: str, date: dt.date) -> None:
+        self._stop_replay()
         access_token = self._get_access_token_or_login()
         if access_token is None:
             return
@@ -204,23 +221,42 @@ class MainWindow(QMainWindow):
         self._set_title(instrument, date.isoformat())
 
     def _start_live(self, instrument: str) -> None:
+        self._stop_replay()
         access_token = self._get_access_token_or_login()
         if access_token is None:
             return
 
         self._stop_live()
-        self._live_bars = {}
         self._live_instrument = instrument
+
+        # Watch every dashboard instrument (indices + watchlisted stocks) on
+        # one feed, not just the selected one, so the dashboard tab reflects
+        # all of them while the Profile/Option Chain tabs stay focused on
+        # whichever instrument is selected in the dropdown.
+        self._key_to_symbol = {
+            get_instrument_key(symbol): symbol for symbol in self._dashboard_symbols
+        }
+        self._live_bars = {symbol: {} for symbol in self._dashboard_symbols}
         self._period_count = 0
-        self._alert_manager.reset_for_new_day(instrument)
-        self._signal_manager.reset_for_new_day(instrument)
+        for symbol in self._dashboard_symbols:
+            self._alert_manager.reset_for_new_day(symbol)
+            self._signal_manager.reset_for_new_day(symbol)
         self._latest_chain_snapshot = []
+        self.dashboard_panel.set_instruments(self._dashboard_symbols)
 
         upstox_key = get_instrument_key(instrument)
+        try:
+            decoder = UpstoxProtobufDecoder()
+        except ImportError as exc:
+            QMessageBox.critical(
+                self, "Live feed unavailable",
+                f"Could not load the Upstox market-feed decoder: {exc}",
+            )
+            return
         live_feed = LiveFeed(
-            instrument_keys=[upstox_key],
+            instrument_keys=list(self._key_to_symbol),
             access_token=access_token,
-            decoder=_NotImplementedDecoder(),
+            decoder=decoder,
         )
 
         self._live_worker = LiveFeedWorker(live_feed)
@@ -238,6 +274,7 @@ class MainWindow(QMainWindow):
         self._option_chain_poller.start()
         self.tabs.setTabEnabled(1, True)
         self.tabs.setTabEnabled(2, True)
+        self.tabs.setTabEnabled(3, True)
 
         self._set_title(instrument, "LIVE")
         self.statusBar().showMessage(f"{instrument} | connecting live feed...")
@@ -252,10 +289,72 @@ class MainWindow(QMainWindow):
             self._option_chain_bridge.poller = None
         self.tabs.setTabEnabled(1, False)
         self.tabs.setTabEnabled(2, False)
+        self.tabs.setTabEnabled(3, False)
+
+    def _start_replay(self, instrument: str, date: dt.date) -> None:
+        """Step through an already-completed session bar by bar, so a
+        customer can see how IB/day-type/signals would have unfolded
+        without waiting for a live session — the cheapest way to
+        demonstrate the tool actually works."""
+        self._stop_live()
+        self._stop_replay()
+        access_token = self._get_access_token_or_login()
+        if access_token is None:
+            return
+
+        upstox_key = get_instrument_key(instrument)
+        try:
+            result = fetch_historical_session(upstox_key, date, access_token)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Cannot load session", str(exc))
+            return
+
+        if result.is_partial_or_missing and result.df.empty:
+            QMessageBox.information(
+                self, "No data", f"No session data for {instrument} on {date} "
+                "(likely a holiday)."
+            )
+            return
+
+        self._live_instrument = instrument
+        config = get_instrument_config(instrument)
+        self._replay_engine = ReplayEngine(instrument, result.df, config)
+
+        self._replay_timer = QTimer(self)
+        self._replay_timer.timeout.connect(self._step_replay)
+        self.tabs.setTabEnabled(1, False)
+        self.tabs.setTabEnabled(2, True)
+        self._set_title(instrument, f"REPLAY {date.isoformat()}")
+        self.statusBar().showMessage(f"{instrument} | replaying {date} ...")
+        self._replay_timer.start(REPLAY_STEP_INTERVAL_MS)
+
+    def _step_replay(self) -> None:
+        step = self._replay_engine.step()
+        if step is None:
+            self._stop_replay()
+            self.statusBar().showMessage(f"{self._live_instrument} | replay finished")
+            return
+
+        config = get_instrument_config(self._live_instrument)
+        self.profile_widget.set_profile(step.profile_result, config)
+        self._update_status_bar(self._live_instrument, step.profile_result)
+        for signal in step.signals:
+            self.signals_panel.add_replay_signal(signal, step.timestamp)
+
+    def _stop_replay(self) -> None:
+        if self._replay_timer is not None:
+            self._replay_timer.stop()
+            self._replay_timer = None
+        self._replay_engine = None
 
     def _on_live_bar(self, bar: Bar) -> None:
-        self._live_bars[bar.minute_start] = bar
-        rows = sorted(self._live_bars.items())
+        symbol = self._key_to_symbol.get(bar.instrument_key)
+        if symbol is None:
+            return
+
+        bars = self._live_bars.setdefault(symbol, {})
+        bars[bar.minute_start] = bar
+        rows = sorted(bars.items())
         df = pd.DataFrame(
             [
                 {
@@ -269,23 +368,29 @@ class MainWindow(QMainWindow):
             index=pd.DatetimeIndex([ts for ts, _ in rows], name="timestamp"),
         )
 
-        config = get_instrument_config(self._live_instrument)
-        profile_result = MarketProfile(self._live_instrument, df).compute()
-        self.profile_widget.set_profile(profile_result, config)
-        self.option_chain_panel.set_underlying_levels(profile_result)
-        self._update_status_bar(self._live_instrument, profile_result)
+        config = get_instrument_config(symbol)
+        profile_result = MarketProfile(symbol, df).compute()
+        period_count = len(profile_result.tpo.period_letters)
+        self.dashboard_panel.update_row(symbol, bar.close, profile_result, config)
 
-        self._period_count = len(profile_result.tpo.period_letters)
+        is_selected = symbol == self._live_instrument
+        chain = self._latest_chain_snapshot if is_selected else None
+        if is_selected:
+            self.profile_widget.set_profile(profile_result, config)
+            self.option_chain_panel.set_underlying_levels(profile_result)
+            self._update_status_bar(symbol, profile_result)
+            self._period_count = period_count
+
         self._alert_manager.check_and_alert(
-            self._live_instrument, bar.close, self._period_count, profile_result, config
+            symbol, bar.close, period_count, profile_result, config
         )
         self._signal_manager.check_and_signal(
-            self._live_instrument,
+            symbol,
             bar.close,
-            self._period_count,
+            period_count,
             profile_result,
             config,
-            chain=self._latest_chain_snapshot,
+            chain=chain,
         )
 
     def _on_option_chain_snapshot(self, snapshot: list, previous: list) -> None:
@@ -301,4 +406,5 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._stop_live()
+        self._stop_replay()
         super().closeEvent(event)

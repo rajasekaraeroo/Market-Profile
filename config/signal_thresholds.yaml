@@ -1,0 +1,22 @@
+# User-tunable sensitivity for the trade-signal engine (src/engine/signals.py).
+#
+# This file is optional — if absent, or if a key below is omitted, the
+# built-in default for that key is used (see src/engine/signal_config.py).
+# Uncomment and edit values to dial signals toward more/faster (lower
+# numbers) or fewer/slower-confirming (higher numbers).
+
+# How many bars price may spend outside the value area before a rejection
+# back inside no longer counts as a fresh signal.
+# va_rejection_window_bars: 3
+
+# How many value-area rows the POC must migrate before a POC-migration
+# signal fires.
+# poc_migration_threshold_rows: 4
+
+# How many TPO periods must complete before day type is considered settled
+# enough to fire the end-of-day directional summary signal.
+# day_type_finalize_after_periods: 8
+
+# Minimum seconds between any two signals for the same instrument
+# (hard rate-limit floor, applies across all signal types).
+# min_seconds_between_signals: 120

@@ -7,18 +7,19 @@ itself: open = first tick in the minute, high/low = running max/min,
 close = most recent tick, and the bar finalizes when the minute boundary
 passes.
 
-NOT NETWORK-VERIFIED: Upstox's v3 live feed uses a protobuf-encoded
-WebSocket message (`MarketDataFeedV3.proto`), which is not available in
-this offline build environment. Protobuf decoding is isolated behind
-`MarketFeedDecoder` so the connection/aggregation/reconnect logic here is
-correct and testable independently of that schema — wire up a real
-decoder (generated from Upstox's published `.proto` file) before going
-live.
+Protobuf decoding (`UpstoxProtobufDecoder`) uses the compiled
+`MarketDataFeedV3_pb2` schema shipped inside the `upstox-python-sdk`
+package (already a `requirements.txt` dependency) rather than a
+hand-rolled `.proto` — that schema is generated and maintained by
+Upstox themselves, so it tracks their published v3 feed format directly.
 """
 
 import datetime as dt
+import json
 import logging
+import ssl
 import time as time_module
+import uuid
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
@@ -29,6 +30,11 @@ from src.data.historical import fetch_historical_session
 logger = logging.getLogger(__name__)
 
 MARKET_FEED_URL = "wss://api.upstox.com/v3/feed/market-data-feed"
+
+# Index instruments only ever need last-traded-price — "ltpc" is the
+# lightest subscription mode Upstox offers and is sufficient for building
+# 1-minute bars from ticks.
+FEED_MODE = "ltpc"
 
 # Small buffer either side of actual 09:15-15:30 market hours.
 FEED_WINDOW_START = dt.time(9, 0)
@@ -60,14 +66,67 @@ class Bar:
 
 
 class MarketFeedDecoder(Protocol):
-    """Turns one raw WebSocket message into zero or more ticks.
-
-    The real implementation depends on Upstox's protobuf schema
-    (`MarketDataFeedV3.proto`) which must be generated from their
-    published `.proto` file — not available in this build.
-    """
+    """Turns one raw WebSocket message into zero or more ticks."""
 
     def decode(self, raw_message: bytes) -> list[Tick]: ...
+
+
+class UpstoxProtobufDecoder:
+    """Decodes Upstox v3 `FeedResponse` protobuf messages into ticks,
+    using the compiled schema from `upstox_client.feeder.proto` (the
+    SDK package Upstox publishes and maintains) rather than a vendored
+    `.proto` file we'd have to keep in sync ourselves.
+
+    Only handles the "ltpc" feed mode — the lightest mode and the only
+    one index instruments need (Session 2 spec: LTP ticks, not OHLC).
+    """
+
+    def __init__(self):
+        from upstox_client.feeder.proto import MarketDataFeedV3_pb2 as feed_pb2
+
+        self._feed_pb2 = feed_pb2
+
+    def _extract_ltpc(self, feed):
+        if feed.HasField("ltpc"):
+            return feed.ltpc
+        if feed.HasField("fullFeed"):
+            full = feed.fullFeed
+            if full.HasField("marketFF") and full.marketFF.HasField("ltpc"):
+                return full.marketFF.ltpc
+            if full.HasField("indexFF") and full.indexFF.HasField("ltpc"):
+                return full.indexFF.ltpc
+        return None
+
+    def decode(self, raw_message: bytes) -> list[Tick]:
+        response = self._feed_pb2.FeedResponse()
+        response.ParseFromString(raw_message)
+
+        ticks = []
+        for instrument_key, feed in response.feeds.items():
+            ltpc = self._extract_ltpc(feed)
+            if ltpc is None or ltpc.ltp == 0:
+                continue
+
+            timestamp = (
+                dt.datetime.fromtimestamp(ltpc.ltt / 1000)
+                if ltpc.ltt
+                else dt.datetime.now()
+            )
+            ticks.append(
+                Tick(instrument_key=instrument_key, timestamp=timestamp, ltp=ltpc.ltp)
+            )
+        return ticks
+
+
+def build_subscribe_message(instrument_keys: list[str], mode: str = FEED_MODE) -> bytes:
+    """Upstox's v3 feed subscription handshake: a JSON request sent as a
+    binary WebSocket frame right after the connection opens."""
+    request = {
+        "guid": str(uuid.uuid4()),
+        "method": "sub",
+        "data": {"instrumentKeys": instrument_keys, "mode": mode},
+    }
+    return json.dumps(request).encode("utf-8")
 
 
 def _minute_start(timestamp: dt.datetime) -> dt.datetime:
@@ -221,13 +280,24 @@ class LiveFeed:
             for instrument_key, gap_start in list(self._last_bar_end.items()):
                 self._backfill_gap(instrument_key, gap_start)
 
+    def _subscribe(self, ws) -> None:
+        ws.send(
+            build_subscribe_message(self.instrument_keys),
+            opcode=websocket.ABNF.OPCODE_BINARY,
+        )
+
     def _connect_and_run(self) -> None:
         self._ws = websocket.WebSocketApp(
             MARKET_FEED_URL,
             header={"Authorization": f"Bearer {self.access_token}"},
+            on_open=lambda ws: self._subscribe(ws),
             on_message=lambda ws, message: self._handle_message(message),
         )
-        self._ws.run_forever()
+        # Matches the official SDK's websocket-client sslopt — Upstox's
+        # market-feed WebSocket cert chain isn't fully verifiable through
+        # certifi's default bundle, so the SDK itself disables hostname
+        # verification rather than failing every connection.
+        self._ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
 
     def stop(self) -> None:
         """Flush any open bars and shut down cleanly."""

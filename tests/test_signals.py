@@ -1,13 +1,14 @@
 from src.engine.day_type import DayType, DayTypeResult
 from src.engine.instruments import get_instrument_config
+from src.engine.signal_config import SignalThresholds
 from src.engine.signals import (
-    POC_MIGRATION_THRESHOLD_ROWS,
     DayTypeFinalizedSignal,
     Direction,
     IBBreakoutSignal,
     POCMigrationSignal,
     VARejectionSignal,
     suggest_strike,
+    suggest_stop_loss,
 )
 
 
@@ -45,8 +46,9 @@ def test_ib_breakout_below_signals_pe():
 def test_va_rejection_at_high_signals_pe():
     trigger = VARejectionSignal()
     config = get_instrument_config("NIFTY")
-    assert trigger.check("NIFTY", 25150, 24900, 25100, config) is None
-    signal = trigger.check("NIFTY", 25050, 24900, 25100, config)
+    day_type = make_day_type()
+    assert trigger.check("NIFTY", 25150, 24900, 25100, day_type, config) is None
+    signal = trigger.check("NIFTY", 25050, 24900, 25100, day_type, config)
     assert signal is not None
     assert signal.direction == Direction.PE
 
@@ -54,18 +56,31 @@ def test_va_rejection_at_high_signals_pe():
 def test_va_rejection_at_low_signals_ce():
     trigger = VARejectionSignal()
     config = get_instrument_config("NIFTY")
-    assert trigger.check("NIFTY", 24850, 24900, 25100, config) is None
-    signal = trigger.check("NIFTY", 24950, 24900, 25100, config)
+    day_type = make_day_type()
+    assert trigger.check("NIFTY", 24850, 24900, 25100, day_type, config) is None
+    signal = trigger.check("NIFTY", 24950, 24900, 25100, day_type, config)
     assert signal is not None
     assert signal.direction == Direction.CE
+
+
+def test_va_rejection_respects_custom_window_threshold():
+    thresholds = SignalThresholds(va_rejection_window_bars=1)
+    trigger = VARejectionSignal(thresholds=thresholds)
+    config = get_instrument_config("NIFTY")
+    day_type = make_day_type()
+    # Two bars outside exceeds the tightened 1-bar window, so no signal.
+    assert trigger.check("NIFTY", 25150, 24900, 25100, day_type, config) is None
+    assert trigger.check("NIFTY", 25160, 24900, 25100, day_type, config) is None
+    assert trigger.check("NIFTY", 25050, 24900, 25100, day_type, config) is None
 
 
 def test_poc_migration_up_signals_ce():
     trigger = POCMigrationSignal()
     config = get_instrument_config("NIFTY")
-    trigger.check("NIFTY", 25000, config)
-    threshold = POC_MIGRATION_THRESHOLD_ROWS * config.value_step
-    signal = trigger.check("NIFTY", 25000 + threshold, config)
+    day_type = make_day_type()
+    trigger.check("NIFTY", 25000, day_type, config)
+    threshold = trigger.thresholds.poc_migration_threshold_rows * config.value_step
+    signal = trigger.check("NIFTY", 25000 + threshold, day_type, config)
     assert signal is not None
     assert signal.direction == Direction.CE
 
@@ -73,11 +88,27 @@ def test_poc_migration_up_signals_ce():
 def test_poc_migration_down_signals_pe():
     trigger = POCMigrationSignal()
     config = get_instrument_config("NIFTY")
-    trigger.check("NIFTY", 25000, config)
-    threshold = POC_MIGRATION_THRESHOLD_ROWS * config.value_step
-    signal = trigger.check("NIFTY", 25000 - threshold, config)
+    day_type = make_day_type()
+    trigger.check("NIFTY", 25000, day_type, config)
+    threshold = trigger.thresholds.poc_migration_threshold_rows * config.value_step
+    signal = trigger.check("NIFTY", 25000 - threshold, day_type, config)
     assert signal is not None
     assert signal.direction == Direction.PE
+
+
+def test_suggest_stop_loss_ce_uses_ib_low():
+    day_type = make_day_type(ib_low=24900, ib_high=25000)
+    assert suggest_stop_loss(Direction.CE, day_type) == 24900
+
+
+def test_suggest_stop_loss_pe_uses_ib_high():
+    day_type = make_day_type(ib_low=24900, ib_high=25000)
+    assert suggest_stop_loss(Direction.PE, day_type) == 25000
+
+
+def test_suggest_stop_loss_none_when_insufficient_data():
+    day_type = make_day_type(day_type=DayType.INSUFFICIENT_DATA)
+    assert suggest_stop_loss(Direction.CE, day_type) is None
 
 
 def test_day_type_finalized_bullish_extension_signals_ce():

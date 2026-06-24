@@ -10,7 +10,7 @@ command line required.
 import os
 import webbrowser
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QDialog,
     QLabel,
     QLineEdit,

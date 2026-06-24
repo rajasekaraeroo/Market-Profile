@@ -1,4 +1,10 @@
-from src.engine.oi_analysis import OIBuildup, max_oi_strike, oi_buildup, pcr
+from src.engine.oi_analysis import (
+    OIBuildup,
+    detect_momentum_breakout,
+    max_oi_strike,
+    oi_buildup,
+    pcr,
+)
 
 
 def make_chain():
@@ -72,3 +78,18 @@ def test_oi_buildup_skips_strikes_not_present_in_previous_snapshot():
     ]
     result = oi_buildup(now, prev)
     assert 25100 not in result
+
+
+def test_momentum_breakout_fires_on_fresh_high():
+    history = [(0.0, 100.0), (60.0, 105.0), (120.0, 110.0)]
+    assert detect_momentum_breakout(history) is True
+
+
+def test_momentum_breakout_does_not_fire_without_fresh_high():
+    history = [(0.0, 100.0), (60.0, 105.0), (120.0, 102.0)]
+    assert detect_momentum_breakout(history) is False
+
+
+def test_momentum_breakout_needs_at_least_two_samples():
+    assert detect_momentum_breakout([(0.0, 100.0)]) is False
+    assert detect_momentum_breakout([]) is False

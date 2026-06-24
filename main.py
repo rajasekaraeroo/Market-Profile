@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from PyQt5.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 
 from src.ui.main_window import MainWindow
 
@@ -31,7 +31,7 @@ def main() -> None:
     window = MainWindow()
     window.resize(900, 700)
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
